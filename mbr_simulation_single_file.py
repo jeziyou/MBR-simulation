@@ -3542,6 +3542,7 @@ def _read_foam_vector(filepath):
 if __name__ == "__main__":
     parse_foam_results(".")
 '''
+
         with open(os.path.join(case_dir, "postprocess_openfoam.py"), "w") as f:
             f.write(content)
         os.chmod(os.path.join(case_dir, "postprocess_openfoam.py"), 0o755)
