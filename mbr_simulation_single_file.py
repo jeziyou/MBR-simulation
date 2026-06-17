@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-MBR 工业仿真系统 V7.0 — 自动优化 + 场景对比 + 灵敏度分析 + OpenFOAM
+MBR 工业仿真系统 V8.0 — 阻力串联模型 + EPS/SMP + ASM1 + 全生命周期
 =====================================================================
+V8.0 核心升级 (MBR膜专家级):
+  - 阻力串联模型 (R_total = R_m + R_cake + R_pore + R_irr)
+  - EPS/SMP 动态模型 (多糖/蛋白质比率, 滤饼比阻耦合)
+  - CEB+CIP 化学清洗策略 (药剂消耗, 清洗效率递减)
+  - 简化ASM1生化动力学 (硝化/反硝化分步, 温度θ因子)
+  - α因子模型升级 (MLSS×SRT×EPS 三因素耦合)
+  - 全生命周期成本 (CAPEX+NPV+投资回收期)
+  - 智能诊断专家系统 (根因分析+分级建议)
 V7.0 核心升级:
-  - 参数自动优化引擎 (网格搜索 + Pareto 前沿, 多目标权衡)
-  - 多场景对比模式 (一键运行5个预设, 对比雷达图)
-  - 灵敏度分析 (OAT方法, 龙卷风图, 识别关键参数)
-  - 执行摘要 (状态指示灯, 一目了然)
-  - 量化操作建议 (精确参数调整方向 + 改进幅度)
-V6.0 核心升级:
   - OpenFOAM 案例生成器 (twoPhaseEulerFoam, blockMesh, 完整case)
   - OpenFOAM 结果后处理桥接 (解析 OF 结果 → 本工具可视化)
   - 气泡羽流模型 (Gaussian横向扩散, 浮力驱动上升, 卷吸液体)
@@ -22,7 +24,7 @@ V6.0 核心升级:
   - 动态3D动画 (50帧, 气泡上升/膜丝振动/污泥漂移/水面波动)
 
 依赖: pip install numpy plotly
-版本: 7.0.0 | 日期: 2026-06-17
+版本: 8.0.0 | 日期: 2026-06-17
 """
 
 from __future__ import annotations
@@ -113,45 +115,70 @@ SCENARIO_PRESETS: Dict[ScenarioPreset, Dict[str, Any]] = {
         "aeration_intensity": 80.0, "mlss_mg_l": 8000.0,
         "target_flux_lmh": 18.0, "temperature_c": 20.0,
         "srt_days": 15.0, "cod_influent_mg_l": 300.0,
+        "bod_influent_mg_l": 150.0, "tn_influent_mg_l": 40.0,
+        "tp_influent_mg_l": 5.0, "nh4_influent_mg_l": 25.0,
+        "alkalinity_mg_l": 250.0, "do_setpoint_mg_l": 2.0,
         "ph": 7.0, "aeration_mode": AerationMode.CONTINUOUS,
         "water_depth_m": 4.0, "fiber_slack_pct": 1.5,
         "orifice_diameter_mm": 5.0,
+        "ceb_interval_days": 3.0, "cip_interval_days": 90.0,
+        "capex_per_m3d_rmb": 3500.0,
     },
     ScenarioPreset.INDUSTRIAL: {
         "name": "工业废水处理",
         "aeration_intensity": 120.0, "mlss_mg_l": 10000.0,
         "target_flux_lmh": 15.0, "temperature_c": 25.0,
         "srt_days": 25.0, "cod_influent_mg_l": 800.0,
+        "bod_influent_mg_l": 350.0, "tn_influent_mg_l": 60.0,
+        "tp_influent_mg_l": 8.0, "nh4_influent_mg_l": 30.0,
+        "alkalinity_mg_l": 200.0, "do_setpoint_mg_l": 2.5,
         "ph": 6.5, "aeration_mode": AerationMode.PULSE,
         "water_depth_m": 5.0, "fiber_slack_pct": 2.0,
         "orifice_diameter_mm": 6.0,
+        "ceb_interval_days": 2.0, "cip_interval_days": 60.0,
+        "capex_per_m3d_rmb": 4000.0,
     },
     ScenarioPreset.RECLAIMED_WATER: {
         "name": "中水回用",
         "aeration_intensity": 60.0, "mlss_mg_l": 6000.0,
         "target_flux_lmh": 25.0, "temperature_c": 22.0,
         "srt_days": 20.0, "cod_influent_mg_l": 150.0,
+        "bod_influent_mg_l": 80.0, "tn_influent_mg_l": 30.0,
+        "tp_influent_mg_l": 3.0, "nh4_influent_mg_l": 15.0,
+        "alkalinity_mg_l": 300.0, "do_setpoint_mg_l": 2.0,
         "ph": 7.2, "aeration_mode": AerationMode.INTERMITTENT,
         "water_depth_m": 3.5, "fiber_slack_pct": 1.0,
         "orifice_diameter_mm": 4.0,
+        "ceb_interval_days": 4.0, "cip_interval_days": 120.0,
+        "capex_per_m3d_rmb": 3000.0,
     },
     ScenarioPreset.HIGH_LOAD: {
         "name": "高负荷处理",
         "aeration_intensity": 150.0, "mlss_mg_l": 12000.0,
         "target_flux_lmh": 12.0, "temperature_c": 18.0,
         "srt_days": 10.0, "cod_influent_mg_l": 1200.0,
+        "bod_influent_mg_l": 500.0, "tn_influent_mg_l": 80.0,
+        "tp_influent_mg_l": 12.0, "nh4_influent_mg_l": 50.0,
+        "alkalinity_mg_l": 150.0, "do_setpoint_mg_l": 3.0,
         "ph": 7.0, "aeration_mode": AerationMode.CYCLIC,
         "water_depth_m": 5.5, "fiber_slack_pct": 2.5,
         "orifice_diameter_mm": 6.0,
+        "ceb_interval_days": 1.0, "cip_interval_days": 30.0,
+        "capex_per_m3d_rmb": 4500.0,
     },
     ScenarioPreset.ENERGY_SAVING: {
         "name": "节能模式",
         "aeration_intensity": 40.0, "mlss_mg_l": 6000.0,
         "target_flux_lmh": 15.0, "temperature_c": 20.0,
         "srt_days": 20.0, "cod_influent_mg_l": 250.0,
+        "bod_influent_mg_l": 120.0, "tn_influent_mg_l": 35.0,
+        "tp_influent_mg_l": 4.0, "nh4_influent_mg_l": 20.0,
+        "alkalinity_mg_l": 280.0, "do_setpoint_mg_l": 1.5,
         "ph": 7.0, "aeration_mode": AerationMode.INTERMITTENT,
         "water_depth_m": 3.0, "fiber_slack_pct": 1.0,
         "orifice_diameter_mm": 3.0,
+        "ceb_interval_days": 5.0, "cip_interval_days": 180.0,
+        "capex_per_m3d_rmb": 3200.0,
     },
 }
 
@@ -178,6 +205,8 @@ class SimulationConfig:
     fiber_diameter_mm: float = 1.6           # 单丝外径
     fiber_slack_pct: float = 1.5             # 松弛度
     membrane_area_m2: float = 40.0           # 总膜面积
+    membrane_pore_size_um: float = 0.04      # 膜孔径 (PVDF UF膜)
+    membrane_porosity: float = 0.70          # 膜孔隙率
     # 运行
     mlss_mg_l: float = 8000.0
     srt_days: float = 15.0
@@ -187,14 +216,30 @@ class SimulationConfig:
     target_flux_lmh: float = 20.0
     operating_tmp_pa: float = 15000.0
     ph: float = 7.0
+    do_setpoint_mg_l: float = 2.0            # DO设定点
     # 进水
     cod_influent_mg_l: float = 300.0
     bod_influent_mg_l: float = 150.0
     tn_influent_mg_l: float = 40.0
     tp_influent_mg_l: float = 5.0
+    nh4_influent_mg_l: float = 25.0          # 进水氨氮
+    alkalinity_mg_l: float = 250.0           # 进水碱度 (CaCO₃)
+    # 化学清洗
+    ceb_interval_days: float = 3.0           # CEB间隔 (天)
+    cip_interval_days: float = 90.0          # CIP间隔 (天)
+    ceb_naclo_mg_l: float = 500.0            # CEB次氯酸钠浓度
+    cip_naclo_mg_l: float = 2000.0           # CIP次氯酸钠浓度
+    cip_citric_acid_mg_l: float = 2000.0     # CIP柠檬酸浓度
+    cleaning_efficiency_decay: float = 0.02  # 每次清洗效率递减率
     # 经济
     electricity_price_rmb_kwh: float = 0.6
     membrane_replacement_cost_rmb_m2: float = 80.0
+    capex_per_m3d_rmb: float = 3500.0        # 建设投资 (元/m³/d)
+    chemical_naclo_price_rmb_kg: float = 2.0 # 次氯酸钠单价
+    chemical_citric_price_rmb_kg: float = 8.0 # 柠檬酸单价
+    sludge_disposal_rmb_kg: float = 0.3      # 污泥处置费
+    discount_rate: float = 0.08              # 折现率
+    project_life_years: float = 20.0         # 项目寿命
 
     def validate(self) -> List[str]:
         e = []
@@ -233,26 +278,41 @@ class CalculationResult:
     fiber_amplitude_mm: float = 0.0; fiber_frequency_hz: float = 0.0
     # 传质
     kla_actual: float = 0.0; otr: float = 0.0; sae: float = 0.0
+    alpha_factor: float = 0.7; beta_factor: float = 0.98
     # 能耗
     sec_kwh_m3: float = 0.0; blower_power_kw: float = 0.0
     total_power_kw: float = 0.0
-    # 污染
+    # 污染 (阻力串联模型)
     critical_flux_lmh: float = 0.0; fouling_risk: FoulingRisk = FoulingRisk.MEDIUM
     cleaning_days: float = 0.0; membrane_life_yr: float = 0.0
     fouling_rate_pa_d: float = 0.0; tmp_evolution: List[float] = field(default_factory=list)
+    # 阻力分量 (×10¹² m⁻¹)
+    r_m: float = 0.0; r_cake: float = 0.0; r_pore: float = 0.0
+    r_irr: float = 0.0; r_total: float = 0.0
+    # EPS/SMP
+    eps_mg_gvss: float = 0.0; smp_mg_l: float = 0.0
+    ps_pn_ratio: float = 1.5; svi_ml_g: float = 100.0
+    # 化学清洗
+    ceb_frequency_days: float = 3.0; cip_frequency_days: float = 90.0
+    naclo_consumption_kg_y: float = 0.0; citric_consumption_kg_y: float = 0.0
+    cleaning_efficiency_current: float = 0.92
     # 处理
     cod_eff: float = 0.0; bod_eff: float = 0.0
     tn_eff: float = 0.0; tp_eff: float = 0.0
+    nh4_eff: float = 0.0; no3_effluent_mg_l: float = 0.0
     sludge_kgds_d: float = 0.0
     # 经济
     total_cost: float = 0.0; energy_cost: float = 0.0
-    membrane_cost: float = 0.0; carbon_kgco2: float = 0.0
+    membrane_cost: float = 0.0; chemical_cost: float = 0.0
+    sludge_cost: float = 0.0; carbon_kgco2: float = 0.0
+    capex_total: float = 0.0; npv_rmb: float = 0.0; payback_years: float = 0.0
     # 评分
     op_score: float = 0.0; opt_score: float = 0.0
     sus_score: float = 0.0; overall: float = 0.0
     # 诊断
     warnings: List[str] = field(default_factory=list)
     recommendations: List[str] = field(default_factory=list)
+    root_causes: List[str] = field(default_factory=list)
     # 详细数据
     shear_profile: Optional[np.ndarray] = None
     shear_positions: Optional[np.ndarray] = None
@@ -556,7 +616,10 @@ class AerationPhysics:
 
         # 温度 + MLSS + 模式修正
         temp_factor = 1.024 ** (self.cfg.temperature_c - 20)
-        alpha = 0.6 + 0.4 * np.exp(-self.cfg.mlss_mg_l / 5000)
+        # α因子: 三因素耦合模型 (MLSS × SRT × EPS)
+        mlss_term = 0.6 + 0.4 * np.exp(-self.cfg.mlss_mg_l / 5000)
+        srt_term = 1.0 - 0.15 * np.tanh((self.cfg.srt_days - 15) / 20)  # SRT越大α越低
+        alpha = float(np.clip(mlss_term * srt_term, 0.25, 0.95))
         mode_factors = {
             AerationMode.CONTINUOUS: 1.0, AerationMode.PULSE: 0.85,
             AerationMode.INTERMITTENT: 0.7, AerationMode.CYCLIC: 0.9,
@@ -587,6 +650,7 @@ class AerationPhysics:
             "sae_kg_kwh": float(np.clip(sae, 0.5, 8.0)),
             "sote_pct": float(np.clip(sote, 1, 40)),
             "oxygen_saturation_mgl": self.Cs_o2,
+            "alpha": alpha, "beta": beta,
         }
 
 
@@ -637,6 +701,7 @@ class MBREngineeringCalculator:
         r.kla_actual = mass["kla_actual_h1"]
         r.otr = mass["otr_mgl_h"]
         r.sae = mass["sae_kg_kwh"]
+        r.alpha_factor = mass.get("alpha", 0.7)
 
         # 羽流数据
         r.plume_data = self.aero.compute_plume_field()
@@ -647,29 +712,53 @@ class MBREngineeringCalculator:
         r.blower_power_kw = energy["blower_kw"]
         r.total_power_kw = energy["total_kw"]
 
-        # ── 污染 ──
-        fouling = self._calc_fouling(shear)
+        # ── EPS/SMP 动态模型 ──
+        eps_smp = self._calc_eps_smp()
+        r.eps_mg_gvss = eps_smp["eps"]
+        r.smp_mg_l = eps_smp["smp"]
+        r.ps_pn_ratio = eps_smp["ps_pn"]
+        r.svi_ml_g = eps_smp["svi"]
+
+        # ── 污染 (阻力串联模型) ──
+        fouling = self._calc_fouling_resistance(shear, eps_smp)
         r.critical_flux_lmh = fouling["critical_flux"]
         r.fouling_risk = fouling["risk"]
         r.cleaning_days = fouling["cleaning_days"]
         r.membrane_life_yr = fouling["membrane_life"]
         r.fouling_rate_pa_d = fouling["fouling_rate"]
         r.tmp_evolution = fouling["tmp_evo"]
+        r.r_m = fouling["r_m"]
+        r.r_cake = fouling["r_cake"]
+        r.r_pore = fouling["r_pore"]
+        r.r_irr = fouling["r_irr"]
+        r.r_total = fouling["r_total"]
 
-        # ── 处理效率 ──
-        eff = self._calc_efficiency()
+        # ── 化学清洗策略 ──
+        cleaning = self._calc_cleaning_strategy(fouling)
+        r.ceb_frequency_days = cleaning["ceb_days"]
+        r.cip_frequency_days = cleaning["cip_days"]
+        r.naclo_consumption_kg_y = cleaning["naclo_kg_y"]
+        r.citric_consumption_kg_y = cleaning["citric_kg_y"]
+        r.cleaning_efficiency_current = cleaning["efficiency"]
+
+        # ── 处理效率 (简化ASM1) ──
+        eff = self._calc_efficiency_asm1()
         r.cod_eff = eff["cod"]; r.bod_eff = eff["bod"]
         r.tn_eff = eff["tn"]; r.tp_eff = eff["tp"]
+        r.nh4_eff = eff["nh4"]; r.no3_effluent_mg_l = eff["no3"]
         r.sludge_kgds_d = eff["sludge"]
 
-        # ── 经济 ──
-        econ = self._calc_economics(energy)
+        # ── 经济 (全生命周期) ──
+        econ = self._calc_economics_lifecycle(energy, cleaning, fouling)
         r.total_cost = econ["total"]; r.energy_cost = econ["energy"]
-        r.membrane_cost = econ["membrane"]; r.carbon_kgco2 = econ["carbon"]
+        r.membrane_cost = econ["membrane"]; r.chemical_cost = econ["chemical"]
+        r.sludge_cost = econ["sludge"]; r.carbon_kgco2 = econ["carbon"]
+        r.capex_total = econ["capex"]; r.npv_rmb = econ["npv"]
+        r.payback_years = econ["payback"]
 
-        # ── 评分 & 建议 ──
-        self._scores(r)
-        self._recommendations(r)
+        # ── 评分 & 诊断 ──
+        self._scores_v8(r)
+        self._recommendations_v8(r)
 
         return r
 
@@ -687,101 +776,436 @@ class MBREngineeringCalculator:
         sec = total / 1000 / (perm * 3600) if perm > 0 else 0
         return {"sec": float(sec), "blower_kw": float(blower / 1000), "total_kw": float(total / 1000)}
 
-    def _calc_fouling(self, shear: Dict) -> Dict:
-        flux = self.cfg.target_flux_lmh / 1000 / 3600
-        mlss = self.cfg.mlss_mg_l / 1000
-        tau = shear["tau_avg_pa"]
-        shear_f = (tau / 1.0) ** 0.3 if tau > 0 else 0.5
-        mlss_f = (mlss / 8.0) ** (-0.15) if mlss > 0 else 1.0
-        ph_f = 1.0 - 0.05 * abs(self.cfg.ph - 7.0)
-        j_crit = float(np.clip(15.0 * shear_f * mlss_f * ph_f, 8, 55))
+    # ── EPS/SMP 动态模型 ─────────────────────────────────
 
+    def _calc_eps_smp(self) -> Dict:
+        """EPS/SMP 动态模型
+
+        EPS = f(SRT, F/M, shear) — 胞外聚合物
+        SMP = UAP + BAP — 溶解性微生物产物
+        PS/PN 比率 — 决定滤饼层结构
+        SVI — 污泥沉降指数
+        """
+        mlss = self.cfg.mlss_mg_l / 1000
+        srt = self.cfg.srt_days
+        T = self.cfg.temperature_c
+
+        # F/M 比 (kg BOD/kg MLVSS·d)
+        mlvss = mlss * 0.75
+        bod_load = self.cfg.bod_influent_mg_l / 1000 * (self.cfg.target_flux_lmh / 1000 * self.cfg.membrane_area_m2 * 24)
+        fm_ratio = bod_load / max(mlvss * (self.cfg.membrane_area_m2 / 40 * 0.5), 0.001)
+
+        # EPS: 随SRT增大而降低, 随F/M增大而增多
+        eps_base = 80.0  # mg EPS/g VSS (典型MBR: 40-120)
+        eps = eps_base * (1.0 - 0.4 * np.tanh((srt - 10) / 20)) * (1.0 + 0.3 * np.tanh((fm_ratio - 0.15) / 0.1))
+        eps = np.clip(eps, 20, 160)
+
+        # SMP: UAP (底物利用相关) + BAP (生物量衰减相关)
+        uap = 12.0 * fm_ratio / 0.15  # mg/L
+        bap = 8.0 * (srt / 20) * (mlss / 8)  # mg/L
+        smp = uap + bap
+        smp = np.clip(smp, 5, 80)
+
+        # PS/PN 比率: 高SRT → 低PS/PN → 致密滤饼
+        ps_pn = 1.8 - 0.6 * np.tanh((srt - 15) / 15)
+        ps_pn = np.clip(ps_pn, 0.4, 2.5)
+
+        # SVI: 污泥沉降性
+        svi = 100.0 * (1.0 + 0.3 * (fm_ratio - 0.15) / 0.15)
+        svi = np.clip(svi, 60, 200)
+
+        return {"eps": float(eps), "smp": float(smp), "ps_pn": float(ps_pn), "svi": float(svi)}
+
+    # ── 阻力串联模型 ──────────────────────────────────────
+
+    def _calc_fouling_resistance(self, shear: Dict, eps_smp: Dict) -> Dict:
+        """阻力串联模型 (Resistance-in-Series)
+
+        J = TMP / (μ · R_total)
+        R_total = R_m + R_cake + R_pore + R_irr
+
+        各阻力分量基于物理化学机制:
+        - R_m: 膜固有阻力 (Darcy定律, 膜孔径&孔隙率)
+        - R_cake: 滤饼层阻力 (EPS/SMP沉积, 可逆)
+        - R_pore: 膜孔堵塞阻力 (CEB可部分恢复)
+        - R_irr: 不可逆污染 (长期累积, CIP可部分恢复)
+        """
+        T = self.cfg.temperature_c
+        mu = PHYS.MU_W20 * np.exp(-0.027 * (T - PHYS.T_REF))  # 水粘度
+        flux_ms = self.cfg.target_flux_lmh / 1000 / 3600
+        tau = shear["tau_avg_pa"]
+        mlss = self.cfg.mlss_mg_l / 1000
+        eps = eps_smp["eps"]
+        smp = eps_smp["smp"]
+        ps_pn = eps_smp["ps_pn"]
+
+        # ── R_m: 膜固有阻力 (Darcy: R_m = δ / (κ·ε)) ──
+        pore_size_m = self.cfg.membrane_pore_size_um * 1e-6
+        porosity = self.cfg.membrane_porosity
+        thickness_m = self.cfg.sheet_thickness_mm / 1000
+        # Kozeny-Carman: κ = ε³·d² / (180·(1-ε)²)
+        kappa = porosity ** 3 * pore_size_m ** 2 / (180 * (1 - porosity) ** 2 + 1e-20)
+        r_m = thickness_m / (kappa * porosity + 1e-20) * 1e-12  # ×10¹² m⁻¹
+        r_m = np.clip(r_m, 0.5, 5.0)
+
+        # ── R_cake: 滤饼层阻力 ──
+        # 比阻 α = α₀ · (EPS)^0.5 · (PS/PN)^(-0.6) · (1 + n_c·ΔP)
+        alpha_0 = 5e11  # 基础比阻 m/kg
+        alpha = alpha_0 * (eps / 80) ** 0.5 * (ps_pn / 1.5) ** (-0.6)
+        # 滤饼质量 M_cake ∝ flux·MLSS·SMP / shear
+        cake_mass = flux_ms * mlss * smp / max(tau, 0.05) * 0.01
+        r_cake = alpha * cake_mass * 1e-12  # ×10¹² m⁻¹
+        r_cake = np.clip(r_cake, 0.1, 30.0)
+
+        # ── R_pore: 膜孔堵塞 ──
+        # 与SMP浓度和运行时间相关
+        r_pore = smp * 0.015 * (flux_ms * 1e6 / 20) ** 1.5 * 1e-12
+        r_pore = np.clip(r_pore, 0.05, 10.0)
+
+        # ── R_irr: 不可逆污染 (长期累积) ──
+        # 受化学清洗次数和效率影响
+        cleaning_cycles = 365 / max(self.cfg.ceb_interval_days, 1)
+        r_irr_base = 0.5 * (mlss / 8) * (smp / 25) * 1e-12
+        r_irr = r_irr_base * (1.0 + 0.01 * cleaning_cycles)
+        r_irr = np.clip(r_irr, 0.1, 15.0)
+
+        # ── R_total ──
+        r_total = r_m + r_cake + r_pore + r_irr
+
+        # ── 反算TMP: TMP = J · μ · R_total ──
+        tmp_calculated = flux_ms * mu * (r_total * 1e12) / 1000  # kPa
+        tmp_calculated = np.clip(tmp_calculated, 5, 80)
+
+        # ── 临界通量: 考虑EPS/SMP效应 ──
+        shear_f = (tau / 1.0) ** 0.3 if tau > 0 else 0.5
+        mlss_f = (mlss / 8.0) ** (-0.15)
+        eps_f = (eps / 80) ** (-0.2)
+        ph_f = 1.0 - 0.05 * abs(self.cfg.ph - 7.0)
+        j_crit = float(np.clip(18.0 * shear_f * mlss_f * eps_f * ph_f, 8, 60))
+
+        # ── 污染风险 ──
         ratio = self.cfg.target_flux_lmh / max(j_crit, 1)
         mlss_risk = 0.5 if mlss < 4 else (1.0 if mlss < 8 else (1.5 if mlss < 12 else 2.0))
-        rs = mlss_risk * (0.5 + ratio)
+        smp_risk = 0.8 if smp < 20 else (1.0 if smp < 40 else 1.5)
+        rs = mlss_risk * smp_risk * (0.5 + ratio)
         if rs < 0.75: risk = FoulingRisk.VERY_LOW
         elif rs < 1.25: risk = FoulingRisk.LOW
         elif rs < 2.0: risk = FoulingRisk.MEDIUM
-        elif rs < 3.0: risk = FoulingRisk.HIGH
+        elif rs < 3.5: risk = FoulingRisk.HIGH
         else: risk = FoulingRisk.CRITICAL
 
+        # ── 清洗周期 ──
         cd_map = {FoulingRisk.VERY_LOW: 60, FoulingRisk.LOW: 30, FoulingRisk.MEDIUM: 14,
                   FoulingRisk.HIGH: 7, FoulingRisk.CRITICAL: 3}
         cd = cd_map.get(risk, 14)
         cc_count = 365 / max(cd, 1)
         ml = 8 if cc_count < 10 else (5 if cc_count < 20 else (4 if cc_count < 30 else 3))
 
-        k_f = 2.5e-3
-        fr = k_f * (self.cfg.target_flux_lmh / 20) ** 2 * mlss / max(tau, 0.05)
+        # ── 污染速率 (非线性, 两阶段) ──
+        if ratio < 0.9:
+            fr = 1.5e-3 * (mlss / 8) ** 0.8 * (smp / 25) ** 0.5
+        else:
+            fr = 4.0e-3 * (ratio - 0.8) ** 1.5 * (mlss / 8) * (smp / 25)
 
-        tmp_evo = [self.cfg.operating_tmp_pa]
+        # ── TMP 30天演化 (两阶段: 缓慢上升 → TMP jump) ──
+        tmp_evo = [self.cfg.operating_tmp_pa / 1000]  # kPa
         for day in range(1, 31):
-            tmp = tmp_evo[-1] + fr * 1000
-            if day % cd == 0: tmp = self.cfg.operating_tmp_pa * 1.15
-            tmp_evo.append(float(np.clip(tmp, 5000, 50000)))
+            if ratio < 0.95:
+                # 亚临界: 缓慢线性上升
+                dtmp = fr * 0.5
+            else:
+                # 超临界: TMP jump (指数加速)
+                phase = min(day / 10, 1.0)
+                dtmp = fr * (1.0 + 3.0 * phase ** 2)
 
-        return {"critical_flux": j_crit, "risk": risk, "cleaning_days": float(cd),
-                "membrane_life": float(ml), "fouling_rate": float(fr * 1000), "tmp_evo": tmp_evo}
+            tmp = tmp_evo[-1] + dtmp
 
-    def _calc_efficiency(self) -> Dict:
-        hrt, srt = self.cfg.hrt_hours, self.cfg.srt_days
-        cod = 1 - np.exp(-0.1 * hrt * (1 + srt / 30))
-        bod = 1 - np.exp(-0.15 * hrt * (1 + srt / 20))
-        tn = (0.85 * 0.6 + 0.7 * 0.4 * (1 - np.exp(-0.05 * srt))) * (1.024 ** (self.cfg.temperature_c - 20))
-        tp = 0.3 + 0.5 * (1 - np.exp(-0.04 * srt))
-        y_obs = 0.4 / (1 + 0.05 * srt)
+            # 清洗重置
+            if day % cd == 0:
+                current_eff = max(0.65, 0.95 - (day // max(cd, 1)) * self.cfg.cleaning_efficiency_decay)
+                tmp = self.cfg.operating_tmp_pa / 1000 * (2.0 - current_eff)
+
+            tmp_evo.append(float(np.clip(tmp, 5, 80)))
+
+        return {
+            "critical_flux": j_crit, "risk": risk, "cleaning_days": float(cd),
+            "membrane_life": float(ml), "fouling_rate": float(fr * 1000),
+            "tmp_evo": [t * 1000 for t in tmp_evo],  # 转回 Pa
+            "r_m": float(r_m), "r_cake": float(r_cake), "r_pore": float(r_pore),
+            "r_irr": float(r_irr), "r_total": float(r_total),
+            "tmp_kpa": float(tmp_calculated),
+        }
+
+    # ── 化学清洗策略 ──────────────────────────────────────
+
+    def _calc_cleaning_strategy(self, fouling: Dict) -> Dict:
+        """CEB + CIP 化学清洗策略
+
+        CEB (化学增强反洗): 每周2-3次, NaClO 200-500 mg/L
+        CIP (就地清洗): 每3-6个月, NaClO 1000-3000 mg/L + 柠檬酸
+        """
+        risk = fouling["risk"]
+        smp = self.cfg.mlss_mg_l / 1000 * 3  # 简化的SMP估算
+
+        # CEB 频率
+        ceb_map = {FoulingRisk.VERY_LOW: 5, FoulingRisk.LOW: 4, FoulingRisk.MEDIUM: 3,
+                   FoulingRisk.HIGH: 2, FoulingRisk.CRITICAL: 1}
+        ceb_days = ceb_map.get(risk, 3)
+
+        # CIP 频率
+        cip_map = {FoulingRisk.VERY_LOW: 180, FoulingRisk.LOW: 120, FoulingRisk.MEDIUM: 90,
+                   FoulingRisk.HIGH: 60, FoulingRisk.CRITICAL: 30}
+        cip_days = cip_map.get(risk, 90)
+
+        # 药剂消耗
+        membrane_volume_l = self.cfg.membrane_area_m2 * 0.01 * 1000  # 膜组件容积估算
+        ceb_volume_l = membrane_volume_l * 1.5  # CEB: 膜组件容积×1.5
+        cip_volume_l = membrane_volume_l * 3.0  # CIP: 膜组件容积×3.0
+
+        ceb_per_year = 365 / max(ceb_days, 1)
+        cip_per_year = 365 / max(cip_days, 1)
+
+        naclo_kg_y = (ceb_per_year * ceb_volume_l * self.cfg.ceb_naclo_mg_l / 1e6 +
+                      cip_per_year * cip_volume_l * self.cfg.cip_naclo_mg_l / 1e6)
+        citric_kg_y = cip_per_year * cip_volume_l * self.cfg.cip_citric_acid_mg_l / 1e6
+
+        # 清洗效率 (随次数递减)
+        total_cleanings = ceb_per_year + cip_per_year
+        efficiency = max(0.65, 0.95 - total_cleanings * self.cfg.cleaning_efficiency_decay / 365 * 30)
+
+        return {
+            "ceb_days": float(ceb_days), "cip_days": float(cip_days),
+            "naclo_kg_y": float(naclo_kg_y), "citric_kg_y": float(citric_kg_y),
+            "efficiency": float(efficiency),
+        }
+
+    # ── 简化ASM1生化动力学 ───────────────────────────────
+
+    def _calc_efficiency_asm1(self) -> Dict:
+        """简化ASM1生化动力学模型
+
+        包含:
+        - 异养菌好氧生长 (COD/BOD去除)
+        - 自养菌硝化 (NH₄→NO₃)
+        - 反硝化 (NO₃→N₂, 缺氧条件)
+        - 生物除磷 (厌氧-好氧交替)
+        - 温度θ因子修正
+        """
+        hrt = self.cfg.hrt_hours
+        srt = self.cfg.srt_days
+        T = self.cfg.temperature_c
+        DO = self.cfg.do_setpoint_mg_l
+        mlss = self.cfg.mlss_mg_l / 1000
+
+        # 温度修正因子 (θ^(T-20))
+        theta_het = 1.04 ** (T - 20)   # 异养菌
+        theta_nit = 1.10 ** (T - 20)   # 硝化菌 (更敏感)
+        theta_den = 1.06 ** (T - 20)   # 反硝化菌
+
+        # 异养菌: μ_max_H = 6.0 d⁻¹ (ASM1默认)
+        mu_h = 6.0 * theta_het
+        # DO Monod开关
+        do_switch = DO / (0.2 + DO)
+        # 水解速率
+        kh = 3.0 * theta_het
+
+        # COD去除: 水解+异养生长
+        cod_eff = 1.0 - np.exp(-kh * hrt / 24 * do_switch)
+        bod_eff = 1.0 - np.exp(-mu_h * 0.15 * hrt / 24 * do_switch * (1 + srt / 10))
+
+        # 硝化: μ_max_A = 0.8 d⁻¹ (自养菌, ASM1默认)
+        # 受DO、碱度、温度影响
+        mu_a = 0.8 * theta_nit
+        alk = self.cfg.alkalinity_mg_l
+        alk_switch = min(1.0, max(0.0, (alk - 50) / 100))  # 碱度 < 50 mg/L 抑制
+        nh4_eff = 1.0 - np.exp(-mu_a * 0.5 * hrt / 24 * do_switch * alk_switch * (1 + srt / 15))
+        nh4_eff = np.clip(nh4_eff, 0.3, 0.999)
+
+        # 出水NO₃-N (硝化产生 - 反硝化去除)
+        nh4_removed = self.cfg.nh4_influent_mg_l * nh4_eff
+        # 反硝化: 需要缺氧条件 (DO低)
+        den_switch = 1.0 - DO / (0.5 + DO)  # DO越低反硝化越好
+        den_rate = 0.8 * theta_den * den_switch * (hrt / 24)
+        no3_eff = nh4_removed * (1.0 - np.clip(den_rate, 0.1, 0.85))
+
+        # TN去除
+        tn_removed = (self.cfg.tn_influent_mg_l - no3_eff - self.cfg.nh4_influent_mg_l * (1 - nh4_eff))
+        tn_eff = tn_removed / max(self.cfg.tn_influent_mg_l, 1)
+
+        # TP去除: 生物除磷 + 化学辅助
+        tp_eff = 0.35 + 0.45 * (1.0 - np.exp(-0.06 * srt * theta_het))
+        tp_eff = np.clip(tp_eff, 0.3, 0.95)
+
+        # 污泥产量 (观测产率)
+        y_obs = 0.45 / (1 + 0.08 * srt * theta_het ** 0.5)
         bod_rem = self.cfg.bod_influent_mg_l / 1000 * (self.cfg.target_flux_lmh / 1000 * self.cfg.membrane_area_m2 * 24)
-        sludge = y_obs * bod_rem * 0.8
-        return {"cod": float(np.clip(cod * 100, 50, 99.9)), "bod": float(np.clip(bod * 100, 60, 99.9)),
-                "tn": float(np.clip(tn * 100, 20, 95)), "tp": float(np.clip(tp * 100, 30, 95)),
-                "sludge": float(sludge)}
+        sludge = y_obs * bod_rem * 0.85
 
-    def _calc_economics(self, energy: Dict) -> Dict:
-        df = self.cfg.target_flux_lmh / 1000 * self.cfg.membrane_area_m2 * 24
-        af = df * 365
+        return {
+            "cod": float(np.clip(cod_eff * 100, 50, 99.5)),
+            "bod": float(np.clip(bod_eff * 100, 60, 99.5)),
+            "tn": float(np.clip(tn_eff * 100, 20, 95)),
+            "tp": float(np.clip(tp_eff * 100, 30, 95)),
+            "nh4": float(np.clip(nh4_eff * 100, 60, 99.9)),
+            "no3": float(np.clip(no3_eff, 0.5, 30)),
+            "sludge": float(sludge),
+        }
+
+    # ── 全生命周期成本 ────────────────────────────────────
+
+    def _calc_economics_lifecycle(self, energy: Dict, cleaning: Dict, fouling: Dict) -> Dict:
+        """全生命周期成本分析 (LCCA)
+
+        包含:
+        - CAPEX: 建设投资 (土建+设备+膜)
+        - OPEX: 电费+膜更换+化学品+污泥处置
+        - NPV: 净现值
+        - 投资回收期
+        """
+        df = self.cfg.target_flux_lmh / 1000 * self.cfg.membrane_area_m2 * 24  # m³/d
+        af = df * 365  # m³/y
+
+        # ── CAPEX ──
+        capex = self.cfg.capex_per_m3d_rmb * df
+
+        # ── OPEX 细分 ──
+        # 电费
         ec = energy["sec"] * self.cfg.electricity_price_rmb_kwh
-        mc = (self.cfg.membrane_area_m2 * self.cfg.membrane_replacement_cost_rmb_m2 / max(self.cfg.membrane_area_m2 / 40 * 8, 1)) / max(af, 1)
-        total = ec + mc + 0.05
-        carbon = energy["sec"] * 0.6
-        return {"total": float(np.clip(total, 0.2, 8.0)), "energy": float(ec),
-                "membrane": float(mc), "carbon": float(carbon)}
 
-    def _scores(self, r: CalculationResult):
+        # 膜更换费 (考虑膜寿命)
+        ml = fouling["membrane_life"]
+        mc = self.cfg.membrane_area_m2 * self.cfg.membrane_replacement_cost_rmb_m2 / max(ml * af, 1)
+
+        # 化学品费
+        cc = (cleaning["naclo_kg_y"] * self.cfg.chemical_naclo_price_rmb_kg +
+              cleaning["citric_kg_y"] * self.cfg.chemical_citric_price_rmb_kg) / max(af, 1)
+
+        # 污泥处置费
+        sc = self.cfg.sludge_disposal_rmb_kg * 0.5  # 估算 0.5 kgDS/m³
+
+        total = ec + mc + cc + sc
+
+        # 碳足迹 (含化学品隐含碳)
+        carbon = energy["sec"] * 0.6 + cleaning["naclo_kg_y"] / max(af, 1) * 0.8
+
+        # ── NPV ──
+        annual_opex = (ec + mc + cc + sc) * af
+        annual_revenue = df * 365 * 0.5  # 假设水价 0.5 元/m³
+        discount = self.cfg.discount_rate
+        life = self.cfg.project_life_years
+        npv = -capex
+        for y in range(1, int(life) + 1):
+            npv += (annual_revenue - annual_opex) / (1 + discount) ** y
+
+        # 投资回收期 (简化)
+        annual_net = annual_revenue - annual_opex
+        payback = capex / max(annual_net, 1) if annual_net > 0 else 99
+
+        return {
+            "total": float(np.clip(total, 0.15, 10.0)), "energy": float(ec),
+            "membrane": float(mc), "chemical": float(cc), "sludge": float(sc),
+            "carbon": float(carbon), "capex": float(capex),
+            "npv": float(npv), "payback": float(np.clip(payback, 0, 30)),
+        }
+
+    # ── 评分 ──────────────────────────────────────────────
+
+    def _scores_v8(self, r: CalculationResult):
         sec = r.sec_kwh_m3
-        es = 100 if sec < 0.3 else (90 if sec < 0.5 else (75 if sec < 0.8 else 50))
+        es = 100 if sec < 0.2 else (90 if sec < 0.4 else (75 if sec < 0.6 else 50))
         tau = r.avg_shear_pa
-        ss = 100 if 0.5 <= tau <= 2.0 else (80 if 0.3 <= tau <= 3.0 else 50)
+        ss = 100 if 0.5 <= tau <= 2.0 else (85 if 0.3 <= tau <= 3.0 else 55)
         fs = {"very_low": 100, "low": 90, "medium": 70, "high": 45, "critical": 25}.get(r.fouling_risk.value, 50)
-        r.op_score = float(es * 0.20 + ss * 0.20 + r.shear_uniformity * 100 * 0.15 + fs * 0.20 + r.cod_eff * 0.15 + r.bod_eff * 0.10)
-        r.opt_score = float(max(0, 100 - abs(sec - 0.3) / 0.3 * 50))
-        r.sus_score = float(max(0, 100 - sec * 100) * 0.35 + r.membrane_life_yr * 8 * 0.25 + max(0, 100 - r.carbon_kgco2 * 200) * 0.2 + r.tn_eff * 0.2)
-        r.overall = float(r.op_score * 0.4 + r.opt_score * 0.2 + r.sus_score * 0.4)
+        # 纳入NH4去除率
+        r.op_score = float(es * 0.18 + ss * 0.18 + r.shear_uniformity * 100 * 0.12 +
+                           fs * 0.18 + r.cod_eff * 0.10 + r.bod_eff * 0.08 + r.nh4_eff * 0.16)
+        r.opt_score = float(max(0, 100 - abs(sec - 0.25) / 0.25 * 50))
+        r.sus_score = float(max(0, 100 - sec * 100) * 0.30 + r.membrane_life_yr * 8 * 0.20 +
+                            max(0, 100 - r.carbon_kgco2 * 200) * 0.15 + r.tn_eff * 0.15 +
+                            max(0, 100 - r.chemical_cost * 500) * 0.10 + r.cleaning_efficiency_current * 100 * 0.10)
+        r.overall = float(r.op_score * 0.35 + r.opt_score * 0.20 + r.sus_score * 0.45)
 
-    def _recommendations(self, r: CalculationResult):
-        recs, warns = [], []
-        if r.sec_kwh_m3 > 0.8:
-            warns.append(f"能耗偏高 ({r.sec_kwh_m3:.2f} kWh/m³)")
-            recs.append("采用脉冲曝气或优化曝气强度")
-        if r.avg_shear_pa < 0.3:
-            warns.append("膜面剪切力偏低")
-            recs.append("提高曝气强度或增大曝气孔径至5-6mm")
-        if r.avg_shear_pa > 3.0:
-            warns.append("剪切力偏高")
-            recs.append("降低曝气强度或增大膜丝松弛度")
+    # ── 智能诊断专家系统 ──────────────────────────────────
+
+    def _recommendations_v8(self, r: CalculationResult):
+        recs, warns, roots = [], [], []
+
+        # ── 根因分析 ──
         if r.fouling_risk in (FoulingRisk.HIGH, FoulingRisk.CRITICAL):
-            warns.append("膜污染风险高")
-            recs.append("降低通量至临界通量以下，优化曝气冲刷")
-        if r.fiber_amplitude_mm < 0.1:
-            recs.append("膜丝振幅过小，增加松弛度或提高曝气")
+            roots.append("膜污染风险高")
+            if r.smp_mg_l > 30:
+                roots.append(f"SMP浓度偏高 ({r.smp_mg_l:.0f} mg/L) → 增加膜孔堵塞和凝胶层形成")
+            if r.ps_pn_ratio < 0.8:
+                roots.append(f"PS/PN比率偏低 ({r.ps_pn_ratio:.2f}) → 滤饼层致密高阻力")
+            if r.r_cake > 10:
+                roots.append(f"滤饼层阻力过大 (R_cake={r.r_cake:.1f}×10¹² m⁻¹) → 曝气剪切力不足或通量过高")
+            if r.r_irr > 3:
+                roots.append(f"不可逆污染累积 (R_irr={r.r_irr:.1f}×10¹² m⁻¹) → 化学清洗频率不足或效率下降")
+
+        if r.sec_kwh_m3 > 0.5:
+            roots.append(f"能耗偏高 ({r.sec_kwh_m3:.2f} kWh/m³)")
+            if r.alpha_factor < 0.5:
+                roots.append("α因子过低 → 曝气传质效率差, 考虑降低MLSS或优化曝气器")
+
+        if r.nh4_eff < 85:
+            roots.append(f"硝化效率不足 ({r.nh4_eff:.1f}%)")
+            if self.cfg.srt_days < 10 and self.cfg.temperature_c < 15:
+                roots.append("低温+低SRT → 硝化菌流失, 需延长SRT或提高水温")
+
+        if r.tn_eff < 60:
+            roots.append(f"总氮去除率低 ({r.tn_eff:.1f}%) → 反硝化不足, 检查缺氧区和碳源")
+
+        # ── 警告 ──
+        if r.sec_kwh_m3 > 0.6:
+            warns.append(f"能耗偏高 ({r.sec_kwh_m3:.2f} kWh/m³)")
+        if r.avg_shear_pa < 0.3:
+            warns.append("膜面剪切力偏低 (需提高曝气)")
+        if r.avg_shear_pa > 3.0:
+            warns.append("剪切力偏高 (膜丝疲劳风险)")
+        if r.fouling_risk in (FoulingRisk.HIGH, FoulingRisk.CRITICAL):
+            warns.append(f"膜污染风险: {r.fouling_risk.value}")
         if r.fiber_amplitude_mm > 5.0:
             warns.append("膜丝振幅过大，存在断丝风险")
-            recs.append("降低曝气或减小松弛度")
-        if r.carbon_kgco2 > 0.5:
-            recs.append("碳足迹偏高，考虑可再生能源")
+        if r.cleaning_efficiency_current < 0.75:
+            warns.append(f"清洗效率已降至 {r.cleaning_efficiency_current:.0%}，建议提前CIP")
+        if r.payback_years > 15:
+            warns.append(f"投资回收期过长 ({r.payback_years:.0f} 年)")
+        if r.npv_rmb < 0:
+            warns.append(f"NPV为负 ({r.npv_rmb:.0f} 元)，项目经济性不佳")
+
+        # ── 分级建议 ──
+        # Level 1: 紧急 (污染风险高)
+        if r.fouling_risk in (FoulingRisk.HIGH, FoulingRisk.CRITICAL):
+            recs.append("【紧急】降低通量至临界通量以下，增加CEB频率至每天1次")
+            if r.smp_mg_l > 30:
+                recs.append(f"【紧急】SMP偏高 → 延长SRT至{self.cfg.srt_days * 1.5:.0f}天或增加排泥")
+            if r.ps_pn_ratio < 0.8:
+                recs.append("【紧急】PS/PN过低 → 投加PAC改善滤饼结构或降低MLSS")
+
+        # Level 2: 优化 (运行参数调整)
+        if r.sec_kwh_m3 > 0.4:
+            recs.append("【优化】采用脉冲曝气(开8停2)或降低曝气强度10-15%")
+            if self.cfg.srt_days < 15:
+                recs.append("【优化】延长SRT可降低污泥产率，减少排泥能耗")
+        if r.avg_shear_pa < 0.5:
+            recs.append("【优化】增大曝气孔径至5-6mm或提高曝气强度")
+        if r.nh4_eff < 90:
+            recs.append("【优化】提高DO至2.5-3.0 mg/L，或延长HRT至10h以上")
+
+        # Level 3: 长期 (策略性)
+        if r.payback_years > 10:
+            recs.append("【长期】优化膜面积设计，降低CAPEX；考虑分阶段建设")
+        if r.membrane_life_yr < 4:
+            recs.append("【长期】评估膜材料升级(PVDF→PTFE)，或优化CIP配方减少膜损伤")
+        if r.carbon_kgco2 > 0.3:
+            recs.append("【长期】引入光伏/沼气发电，降低碳足迹")
+
         if not recs:
-            recs.append("当前运行参数良好，曝气效果理想")
+            recs.append("当前运行参数良好，膜系统运行稳定")
+
         r.warnings = warns
         r.recommendations = recs
+        r.root_causes = roots
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1967,7 +2391,7 @@ class MBRVisualizer:
     def create_summary_report(self, config: SimulationConfig, result: CalculationResult) -> str:
         L = []
         L.append("=" * 70)
-        L.append("  MBR 工业仿真系统 V7.0 — 真实曝气物理模型")
+        L.append("  MBR 工业仿真系统 V8.0 — 阻力串联模型 + EPS/SMP + ASM1")
         L.append("=" * 70)
         L.append(f"  时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         L.append("")
@@ -1977,15 +2401,14 @@ class MBRVisualizer:
         L.append("  📋 执行摘要")
         L.append("─" * 70)
 
-        # 状态指示灯
         def _status_icon(risk: FoulingRisk) -> str:
             if risk in (FoulingRisk.VERY_LOW, FoulingRisk.LOW): return "🟢"
             if risk == FoulingRisk.MEDIUM: return "🟡"
             return "🔴"
 
         def _sec_icon(sec: float) -> str:
-            if sec < 0.1: return "🟢"
-            if sec < 0.2: return "🟡"
+            if sec < 0.15: return "🟢"
+            if sec < 0.3: return "🟡"
             return "🔴"
 
         def _score_icon(score: float) -> str:
@@ -1996,83 +2419,123 @@ class MBRVisualizer:
         L.append(f"  {_status_icon(result.fouling_risk)} 污染风险: {result.fouling_risk.value}")
         L.append(f"  {_sec_icon(result.sec_kwh_m3)} 能耗 SEC: {result.sec_kwh_m3:.3f} kWh/m³")
         L.append(f"  {_score_icon(result.overall)} 综合评分: {result.overall:.1f}/100")
-        L.append(f"  💰 运行成本: ¥{result.total_cost:.3f}/m³")
+        L.append(f"  💰 运行成本: ¥{result.total_cost:.3f}/m³ (CAPEX: ¥{result.capex_total:,.0f})")
         L.append(f"  🌿 碳足迹: {result.carbon_kgco2:.3f} kgCO₂e/m³")
         L.append(f"  📐 膜面剪切: {result.avg_shear_pa:.2f} Pa | 膜寿命: {result.membrane_life_yr:.0f} 年")
+        L.append(f"  🧪 EPS: {result.eps_mg_gvss:.0f} mg/gVSS | SMP: {result.smp_mg_l:.0f} mg/L | PS/PN: {result.ps_pn_ratio:.2f}")
 
         if result.warnings:
             L.append(f"  ⚠ 关键问题: {'; '.join(result.warnings[:2])}")
         L.append("")
+
+        # ── 运行参数 ──
         L.append("─" * 70)
         L.append("  [1] 运行参数")
         L.append("─" * 70)
         L.append(f"  曝气强度:      {config.aeration_intensity:>8.0f} Nm³/m²/h  ({config.aeration_mode.value})")
         L.append(f"  曝气孔径:      {config.orifice_diameter_mm:>8.0f} mm")
         L.append(f"  膜片数:        {config.sheet_count:>8d} 片")
-        L.append(f"  膜片尺寸:      {config.sheet_width_m*1000:.0f}×{config.sheet_height_m*1000:.0f} mm")
+        L.append(f"  膜面积:        {config.membrane_area_m2:>8.0f} m² (孔径{config.membrane_pore_size_um:.2f}μm)")
         L.append(f"  MLSS:          {config.mlss_mg_l:>8.0f} mg/L")
         L.append(f"  通量:          {config.target_flux_lmh:>8.1f} LMH")
         L.append(f"  水温/pH:       {config.temperature_c:>8.1f}°C / {config.ph:.1f}")
+        L.append(f"  DO设定点:      {config.do_setpoint_mg_l:>8.1f} mg/L")
         L.append("")
+
+        # ── 曝气物理 ──
         L.append("─" * 70)
-        L.append("  [2] 曝气物理")
+        L.append("  [2] 曝气物理 & 传质")
         L.append("─" * 70)
         L.append(f"  气泡d32:       {result.bubble_d32_mm:>8.2f} mm")
         L.append(f"  气泡上升速度:  {result.bubble_rise_ms:>8.3f} m/s")
         L.append(f"  气含率(中):    {result.gas_holdup:>8.4f}")
         L.append(f"  气含率(顶):    {result.gas_holdup_top:>8.4f}")
-        L.append(f"  羽流宽度:      {result.plume_width_m:>8.3f} m")
         L.append(f"  循环流速:      {result.crossflow_vel_ms:>8.3f} m/s")
-        L.append(f"  膜面剪切力:    {result.avg_shear_pa:>8.3f} Pa")
-        L.append(f"  剪切均匀性:    {result.shear_uniformity:>8.3f}")
-        L.append(f"  膜丝振幅:      {result.fiber_amplitude_mm:>8.2f} mm")
-        L.append(f"  膜丝频率:      {result.fiber_frequency_hz:>8.1f} Hz")
-        L.append("")
-        L.append("─" * 70)
-        L.append("  [3] 传质 & 能耗")
-        L.append("─" * 70)
+        L.append(f"  膜面剪切力:    {result.avg_shear_pa:>8.3f} Pa (均匀性: {result.shear_uniformity:.2f})")
+        L.append(f"  膜丝振幅:      {result.fiber_amplitude_mm:>8.2f} mm @ {result.fiber_frequency_hz:.1f} Hz")
+        L.append(f"  α因子:         {result.alpha_factor:>8.3f} (MLSS×SRT耦合)")
         L.append(f"  KLa:           {result.kla_actual:>8.1f} h⁻¹")
-        L.append(f"  OTR:           {result.otr:>8.1f} mg/L/h")
         L.append(f"  SAE:           {result.sae:>8.1f} kgO₂/kWh")
         L.append(f"  SEC:           {result.sec_kwh_m3:>8.3f} kWh/m³")
-        L.append(f"  鼓风机:        {result.blower_power_kw:>8.2f} kW")
         L.append("")
+
+        # ── 膜污染（阻力串联模型） ──
         L.append("─" * 70)
-        L.append("  [4] 膜污染")
+        L.append("  [3] 膜污染 (阻力串联模型)")
         L.append("─" * 70)
         L.append(f"  临界通量:      {result.critical_flux_lmh:>8.1f} LMH")
         L.append(f"  污染风险:      {result.fouling_risk.value:>8s}")
         L.append(f"  污染速率:      {result.fouling_rate_pa_d:>8.0f} Pa/天")
-        L.append(f"  清洗周期:      {result.cleaning_days:>8.0f} 天")
+        L.append(f"  阻力 R_m:      {result.r_m:>8.2f} ×10¹² m⁻¹ (膜固有)")
+        L.append(f"  阻力 R_cake:   {result.r_cake:>8.2f} ×10¹² m⁻¹ (滤饼层)")
+        L.append(f"  阻力 R_pore:   {result.r_pore:>8.2f} ×10¹² m⁻¹ (膜孔堵塞)")
+        L.append(f"  阻力 R_irr:    {result.r_irr:>8.2f} ×10¹² m⁻¹ (不可逆)")
+        L.append(f"  阻力 R_total:  {result.r_total:>8.2f} ×10¹² m⁻¹")
+        L.append("")
+
+        # ── 化学清洗 ──
+        L.append("─" * 70)
+        L.append("  [4] 化学清洗策略")
+        L.append("─" * 70)
+        L.append(f"  CEB间隔:       {result.ceb_frequency_days:>8.0f} 天 (NaClO {config.ceb_naclo_mg_l:.0f} mg/L)")
+        L.append(f"  CIP间隔:       {result.cip_frequency_days:>8.0f} 天 (NaClO {config.cip_naclo_mg_l:.0f} + 柠檬酸 {config.cip_citric_acid_mg_l:.0f} mg/L)")
+        L.append(f"  NaClO消耗:     {result.naclo_consumption_kg_y:>8.1f} kg/年")
+        L.append(f"  柠檬酸消耗:    {result.citric_consumption_kg_y:>8.1f} kg/年")
+        L.append(f"  清洗效率:      {result.cleaning_efficiency_current:>8.1%}")
         L.append(f"  膜寿命:        {result.membrane_life_yr:>8.0f} 年")
         L.append("")
+
+        # ── 处理效率 ──
         L.append("─" * 70)
-        L.append("  [5] 处理效率")
+        L.append("  [5] 处理效率 (简化ASM1)")
         L.append("─" * 70)
         L.append(f"  COD: {result.cod_eff:>8.1f}%  BOD: {result.bod_eff:>8.1f}%")
-        L.append(f"  TN:  {result.tn_eff:>8.1f}%  TP:  {result.tp_eff:>8.1f}%")
-        L.append(f"  污泥:          {result.sludge_kgds_d:>8.1f} kgDS/天")
+        L.append(f"  NH₄-N: {result.nh4_eff:>8.1f}%  TN: {result.tn_eff:>8.1f}%  TP: {result.tp_eff:>8.1f}%")
+        L.append(f"  NO₃-N出水:     {result.no3_effluent_mg_l:>8.1f} mg/L")
+        L.append(f"  污泥产量:      {result.sludge_kgds_d:>8.1f} kgDS/天")
         L.append("")
+
+        # ── 经济 ──
         L.append("─" * 70)
-        L.append("  [6] 经济 & 环境")
+        L.append("  [6] 全生命周期成本")
         L.append("─" * 70)
+        L.append(f"  CAPEX:         ¥{result.capex_total:>8,.0f}")
+        L.append(f"  电费:          ¥{result.energy_cost:>8.3f}/m³")
+        L.append(f"  膜更换:        ¥{result.membrane_cost:>8.3f}/m³")
+        L.append(f"  化学品:        ¥{result.chemical_cost:>8.3f}/m³")
+        L.append(f"  污泥处置:      ¥{result.sludge_cost:>8.3f}/m³")
         L.append(f"  总成本:        ¥{result.total_cost:>8.3f}/m³")
+        L.append(f"  NPV (@{config.discount_rate*100:.0f}%): ¥{result.npv_rmb:>8,.0f}")
+        L.append(f"  投资回收期:    {result.payback_years:>8.1f} 年")
         L.append(f"  碳足迹:        {result.carbon_kgco2:>8.3f} kgCO₂e/m³")
         L.append("")
+
+        # ── 评分 ──
         L.append("─" * 70)
         L.append("  [7] 评分")
         L.append("─" * 70)
-        L.append(f"  运行: {result.op_score:>8.1f}  优化: {result.opt_score:>8.1f}")
-        L.append(f"  可持续: {result.sus_score:>8.1f}  综合: {result.overall:>8.1f}")
+        L.append(f"  运行: {result.op_score:>8.1f}  优化: {result.opt_score:>8.1f}  可持续: {result.sus_score:>8.1f}  综合: {result.overall:>8.1f}")
         L.append("")
+
+        # ── 根因分析 ──
+        if result.root_causes:
+            L.append("─" * 70)
+            L.append("  [8] 根因分析")
+            L.append("─" * 70)
+            for i, rc in enumerate(result.root_causes, 1):
+                L.append(f"  {i}. {rc}")
+            L.append("")
+
         if result.warnings:
             L.append("─" * 70)
-            L.append("  [8] 警告")
+            L.append("  [9] 警告")
             L.append("─" * 70)
             for w in result.warnings:
                 L.append(f"  ⚠ {w}")
+            L.append("")
+
         L.append("─" * 70)
-        L.append("  [9] 建议")
+        L.append("  [10] 分级建议")
         L.append("─" * 70)
         for i, r in enumerate(result.recommendations, 1):
             L.append(f"  {i}. {r}")
@@ -3794,7 +4257,7 @@ def main(args: Optional[List[str]] = None):
 
     # JSON
     report_json = {
-        "version": "7.0.0", "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "8.0.0", "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "config": {
             "aeration_intensity": config.aeration_intensity,
             "orifice_diameter_mm": config.orifice_diameter_mm,
@@ -3802,15 +4265,43 @@ def main(args: Optional[List[str]] = None):
             "sheet_count": config.sheet_count,
             "mlss_mg_l": config.mlss_mg_l,
             "target_flux_lmh": config.target_flux_lmh,
+            "srt_days": config.srt_days,
+            "temperature_c": config.temperature_c,
         },
         "results": {
             "sec_kwh_m3": result.sec_kwh_m3, "avg_shear_pa": result.avg_shear_pa,
             "bubble_d32_mm": result.bubble_d32_mm, "gas_holdup": result.gas_holdup,
-            "kla_actual": result.kla_actual, "critical_flux_lmh": result.critical_flux_lmh,
+            "kla_actual": result.kla_actual, "alpha_factor": result.alpha_factor,
+            "critical_flux_lmh": result.critical_flux_lmh,
             "fouling_risk": result.fouling_risk.value, "overall_score": result.overall,
             "total_cost": result.total_cost, "carbon_kgco2": result.carbon_kgco2,
+            "resistance": {
+                "r_m": result.r_m, "r_cake": result.r_cake,
+                "r_pore": result.r_pore, "r_irr": result.r_irr, "r_total": result.r_total,
+            },
+            "eps_smp": {
+                "eps_mg_gvss": result.eps_mg_gvss, "smp_mg_l": result.smp_mg_l,
+                "ps_pn_ratio": result.ps_pn_ratio, "svi_ml_g": result.svi_ml_g,
+            },
+            "cleaning": {
+                "ceb_days": result.ceb_frequency_days, "cip_days": result.cip_frequency_days,
+                "naclo_kg_y": result.naclo_consumption_kg_y, "citric_kg_y": result.citric_consumption_kg_y,
+                "efficiency": result.cleaning_efficiency_current,
+            },
+            "economics": {
+                "capex": result.capex_total, "npv": result.npv_rmb,
+                "payback_years": result.payback_years,
+                "energy_cost": result.energy_cost, "membrane_cost": result.membrane_cost,
+                "chemical_cost": result.chemical_cost, "sludge_cost": result.sludge_cost,
+            },
+            "treatment": {
+                "cod_eff": result.cod_eff, "bod_eff": result.bod_eff,
+                "nh4_eff": result.nh4_eff, "tn_eff": result.tn_eff, "tp_eff": result.tp_eff,
+                "no3_effluent": result.no3_effluent_mg_l,
+            },
         },
         "warnings": result.warnings, "recommendations": result.recommendations,
+        "root_causes": result.root_causes,
     }
     json_path = os.path.join(out_dir, "mbr_report.json")
     with open(json_path, "w", encoding="utf-8") as f:
